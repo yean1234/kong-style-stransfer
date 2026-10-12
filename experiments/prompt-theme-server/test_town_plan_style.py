@@ -25,6 +25,15 @@ def fake_edit(folder, canvas, prompt, flux, alpha, pipeline=None):
     return Image.fromarray(pixels)
 
 
+def palette_plan():
+    return {'schema_version':'palette-plan-v1','theme':'winter','requested_decorations':['snow','lights'],
+        'original_palette':{'source':'original','colors_hex':['#202020']},
+        'decoration_palettes':{'snow':[{'hex':'#F5F7FF','role':'base','source':'explicit'}],
+            'lights':[{'hex':'#FFD060','role':'base','source':'explicit'}]},
+        'shared_palette':[{'hex':'#202020','role':'outline','source':'original'}],
+        'freeze_per_request':True,'plan_hash':'a'*64,'warnings':[],'status':'ready'}
+
+
 class GroupTests(unittest.TestCase):
     def test_position_suffixes_are_stripped(self):
         self.assertEqual(groups_tsx.group_id('roof_blue_large_upper_03'), 'roof_blue_large')
@@ -48,7 +57,8 @@ class TownSliceTests(unittest.TestCase):
 
     def test_plan_runs_end_to_end_with_a_fake_edit(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(town_plan_style, 'ROOT', Path(tmp)), \
-                patch.object(town_plan_style, 'request_image', fake_edit):
+                patch.object(town_plan_style, 'request_image', fake_edit), \
+                patch.object(town_plan_style, 'build_palette_plan', return_value=palette_plan()):
             run_id = town_plan_style.prepare(SAMPLE/'dsl.json', SAMPLE/'plan.json')
             town_plan_style.run(run_id)
             folder = Path(tmp)/run_id

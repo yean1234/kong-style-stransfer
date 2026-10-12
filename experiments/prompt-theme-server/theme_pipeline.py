@@ -15,8 +15,10 @@ from fastapi.exceptions import RequestValidationError
 from run_records import record_event, review_html
 from run_changes import changes as run_changes
 from pydantic import BaseModel, Field, ValidationError
-from profile_decorations import VERSION, profiles, get_profile, generate_profile
+from profile_decorations import VERSION, profiles, get_profile, generate_profile, profile_masks
 from object_decorations import BACKEND as STYLE_BACKEND
+from palette_planner import build_palette_plan, PaletteUnavailableError, save_palette_swatch
+from style_gate import gate_config, GateConfigurationError
 
 REPO = Path(os.environ.get('THEME_PROJECT', Path(__file__).resolve().parents[2]))
 ROOT = REPO / 'public/theme-runs'
@@ -169,9 +171,20 @@ def save_status(folder, data):
 class Request(BaseModel):
     prompt: str = Field(min_length=2,max_length=1200)
     targets: list[str] = Field(default_factory=list, max_length=64)
+    palette: dict | None = None
+    reference_image: str | None = Field(default=None,max_length=12000000)
+    reference_region: list[int] | None = Field(default=None,min_length=4,max_length=4)
 
 @app.get('/health')
-def health(): return {'status':'ok','parser':'rules-v1','pipeline':VERSION,'backend':'ComfyUI' if STYLE_BACKEND=='comfy' else 'FLUX','busy':busy.locked() or (ROOT/'.batch.lock').exists()}
+def health():
+    try:
+        gate=gate_config();mode=gate['mode'];gate_error=None
+    except GateConfigurationError as error:
+        gate={};mode=os.environ.get('THEME_GATE_MODE');gate_error=str(error)
+    return {'status':'ok','parser':'rules-v1','pipeline':VERSION,'backend':'ComfyUI' if STYLE_BACKEND=='comfy' else 'FLUX',
+        'gate_mode':mode,'gate_config_version':gate.get('config_version'),'gate_configuration_error':gate_error,
+        'vlm':{'url_configured':bool(os.environ.get('THEME_VLM_URL')),'model_configured':bool(os.environ.get('THEME_VLM_MODEL'))},
+        'busy':busy.locked() or (ROOT/'.batch.lock').exists()}
 
 @app.post('/plan')
 def plan(req: Request):
@@ -269,6 +282,9 @@ class IntegrationRequest(BaseModel):
     plan: list[dict] = Field(min_length=1, max_length=64)
     mapId: str = 'floor-1-ruins'
     parent_run_id: str | None = None
+    palette: dict | None = None
+    reference_image: str | None = Field(default=None,max_length=12000000)
+    reference_region: list[int] | None = Field(default=None,min_length=4,max_length=4)
 
 
 class AutomaticPlanRequest(BaseModel):
@@ -307,7 +323,7 @@ def integration_submit(req: IntegrationRequest):
             from crypt_plan_style import baseline
             if baseline()[0].name != req.parent_run_id:
                 raise ValueError('해석 후 적용 상태가 바뀌었습니다. 프롬프트를 다시 해석해주세요.')
-        run_id = prepare_data(req.dsl, req.plan)
+        run_id = prepare_data(req.dsl, req.plan, req.reference_image, req.palette, req.reference_region)
     except (ValueError, KeyError) as error:
         busy.release()
         raise HTTPException(422, str(error))
@@ -323,51 +339,133 @@ def integration_submit(req: IntegrationRequest):
 def run(folder, req):
     data={'id':folder.name,'status':'running','stage':1,'prompt':req.prompt,'created':time.time(),'pipeline':VERSION}
     try:
-        spec=parse_prompt(req.prompt);data['spec']=spec;save_status(folder,data)
+        config=gate_config()
+        spec=parse_prompt(req.prompt)
+        selected=[o for o in catalog() if o['id'] in req.targets]
+        data.update(spec=spec,gate_mode=config['mode'],gate_config_version=config.get('config_version'),
+                    total_objects=len(selected),completed_objects=0,
+                    object_results={o['id']:{'status':'pending'} for o in selected})
+        save_status(folder,data)
         if STATE:
             before=requests.get(STATE,timeout=20);before.raise_for_status()
             (folder/'state-before.json').write_text(json.dumps(before.json(),ensure_ascii=False),encoding='utf8')
-        data['stage']=2;save_status(folder,data)
+        data.update(stage=2,current_object=None);save_status(folder,data)
         original,tinted,objects,hashes=layers(spec['color'])
-        selected=[o for o in catalog() if o['id'] in req.targets]
         original.save(folder/'original-map.png')
-        overlays={}
-        for o in selected:
-            x,y,w,h=o['box'];crop=objects.crop((x,y,x+w,y+h))
-            crop.save(folder/(o['id']+'-original.png'))
+        crops={}
+        for obj in selected:
+            x,y,w,h=obj['box'];crop=objects.crop((x,y,x+w,y+h))
+            crop.save(folder/(obj['id']+'-original.png'))
             corrected=recolor(crop,spec['color'])
-            assert np.array_equal(np.array(crop)[:,:,3],np.array(corrected)[:,:,3])
-            corrected.save(folder/(o['id']+'-color.png'))
-        data['stage']=3;save_status(folder,data)
-        tinted.save(folder/'color-map.png')
+            if not np.array_equal(np.array(crop)[:,:,3],np.array(corrected)[:,:,3]):
+                raise ValueError('Recolor changed source alpha')
+            corrected.save(folder/(obj['id']+'-color.png'))
+            crops[obj['id']]=crop
+        palette_plan=None
         if spec['decorations']:
-            data['stage']=4;save_status(folder,data)
-            for index,o in enumerate(selected):
-                data['current_object']=o['id'];data['completed_objects']=index;data['total_objects']=len(selected)
-                save_status(folder,data)
-                target=folder/o['id'];target.mkdir()
-                crop=Image.open(folder/(o['id']+'-original.png')).convert('RGBA')
-                overlays[o['id']]=generate_profile(target,crop,o,spec,FLUX,key_strip)
-                overlays[o['id']].save(folder/(o['id']+'-decoration.png'))
-            data['completed_objects']=len(selected)
-        data['stage']=5;save_status(folder,data)
-        placements=[];decoration_map=Image.new('RGBA',original.size)
-        for o in selected:
-            x,y,w,h=o['box'];crop=Image.open(folder/(o['id']+'-original.png'))
-            overlay=overlays.get(o['id'],Image.new('RGBA',crop.size));overlay.save(folder/(o['id']+'-decoration.png'))
+            palette_plan=build_palette_plan(req.prompt,spec['theme'],spec['decorations'],list(crops.values()),
+                req.palette,req.reference_image,req.reference_region,config['vlm']['timeout'])
+            (folder/'palette-plan.json').write_text(json.dumps(palette_plan,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+            save_palette_swatch(palette_plan,folder/'palette-swatch.png')
+            data.update(palette_hash=palette_plan['plan_hash'],palette_plan=f'/theme-runs/{folder.name}/palette-plan.json',
+                        palette_swatch=f'/theme-runs/{folder.name}/palette-swatch.png')
+            spec['palette_plan_hash']=palette_plan['plan_hash']
+        data.update(spec=spec,stage=3,total_objects=len(selected));save_status(folder,data)
+        tinted.save(folder/'color-map.png')
+        overlays={}
+        for index,obj in enumerate(selected):
+            name=obj['id'];target=folder/name;target.mkdir(exist_ok=True)
+            data.update(stage=4,current_object=name,total_objects=len(selected));save_status(folder,data)
+            if not spec['decorations']:
+                result={'status':'applied','decision':'applied','structural_valid':True,'scores':{},'warnings':[],
+                        'selected_candidate':None,'retries':0,'gate_mode':config['mode']}
+            else:
+                try:
+                    def on_candidate(candidate,count):
+                        data['object_results'][name]={'status':'evaluating','gate_mode':config['mode'],
+                            'retries':count-1,'last_scores':candidate.get('scores',{})}
+                        save_status(folder,data)
+                    result,overlay=generate_profile(target,crops[name],obj,
+                        dict(spec,palette_plan=palette_plan),FLUX,key_strip,on_candidate)
+                    if overlay is not None and result['status'] in ('applied','applied_with_warning','unscored','recorded','passed'):
+                        if config['mode'] not in ('enforce','shadow') or result['status']=='passed':overlays[name]=overlay
+                    else:
+                        result['status']='failed' if result['status']!='rejected' else 'rejected'
+                except Exception as error:
+                    result={'status':'failed','decision':'failed','structural_valid':False,
+                        'error':f'{type(error).__name__}: {error}','warnings':['object_processing_failed'],
+                        'scores':{'status':'unscored','SC':None,'PQ':None,'O':None},'gate_mode':config['mode']}
+            data['object_results'][name]=result
+            data['completed_objects']=sum(value.get('status') not in ('pending','running','evaluating')
+                                          for value in data['object_results'].values())
+            save_status(folder,data)
+        data.update(stage=5,current_object=None);save_status(folder,data)
+        decoration_map=Image.new('RGBA',original.size);placements=[]
+        if not spec['decorations']:
+            successful=selected
+        else:
+            successful=[obj for obj in selected if obj['id'] in overlays]
+        for obj in successful:
+            name=obj['id'];x,y,w,h=obj['box']
+            overlay=overlays.get(name,Image.new('RGBA',(w,h)))
+            if not overlay.getbbox():continue
+            overlay.save(folder/(name+'-decoration.png'))
             decoration_map.alpha_composite(overlay,(x,y))
-            url='/theme-runs/'+folder.name+'/'+o['id']+'-decoration.png'
-            placements.append({'id':folder.name+'-'+o['id'],'kind':'object','col':x/32,'row':y/32,'imageUrl':url,'anchor':'top-left','renderLayer':'decoration','sourceGroup':'prompt-theme','visible':True})
-        settings={'runId':folder.name,'night':.58 if spec['night'] else 0,'twinkle':spec['twinkle'],'color':spec['color']}
-        Image.new('RGBA',(1,1)).save(folder/'settings.png')
-        placements.insert(0,{'id':folder.name+'-settings','kind':'object','col':0,'row':0,'imageUrl':'/theme-runs/'+folder.name+'/settings.png','renderLayer':'decoration','sourceGroup':'prompt-theme','visible':True,'themeSettings':settings})
-        data['stage']=6;save_status(folder,data)
-        if spec['night']: tinted=Image.alpha_composite(tinted,Image.new('RGBA',tinted.size,(7,19,46,148)))
+            url='/theme-runs/'+folder.name+'/'+name+'-decoration.png'
+            placements.append({'id':folder.name+'-'+name,'kind':'object','col':x/32,'row':y/32,'imageUrl':url,
+                'anchor':'top-left','renderLayer':'decoration','sourceGroup':'prompt-theme','visible':True})
+        applied_objects=len(successful)
+        if applied_objects:
+            settings={'runId':folder.name,'night':.58 if spec['night'] else 0,'twinkle':spec['twinkle'],'color':spec['color']}
+            Image.new('RGBA',(1,1)).save(folder/'settings.png')
+            placements.insert(0,{'id':folder.name+'-settings','kind':'object','col':0,'row':0,
+                'imageUrl':'/theme-runs/'+folder.name+'/settings.png','renderLayer':'decoration','sourceGroup':'prompt-theme',
+                'visible':True,'themeSettings':settings})
+        data.update(stage=6,applied_objects=applied_objects);save_status(folder,data)
+        if spec['night']:tinted=Image.alpha_composite(tinted,Image.new('RGBA',tinted.size,(7,19,46,148)))
         preview=Image.alpha_composite(tinted,decoration_map);preview.save(folder/'preview.png')
-        (folder/'manifest.json').write_text(json.dumps({'pipeline':VERSION,'spec':spec,'source_hashes':hashes,'objects':selected,'placements':placements,'geometry_preserved':True,'alpha_preserved':True},ensure_ascii=False,indent=2),encoding='utf8')
-        data.update(status='ready',stage=7,preview='/theme-runs/'+folder.name+'/preview.png',original='/theme-runs/'+folder.name+'/original-map.png',warnings=spec['warnings']+['미리보기는 정적 이미지입니다. 캐릭터와 반짝임은 적용 후 게임에서 확인하세요.'])
-    except Exception as e:
-        data.update(status='failed',error=str(e))
+        unchanged=sources()[3]==hashes
+        protected_overlap=0;out_of_bounds=0
+        for obj in successful:
+            if obj['id'] not in overlays:continue
+            profile=get_profile(obj);regions,protected=__import__('profile_decorations').profile_masks(crops[obj['id']],profile)
+            allowed=np.logical_or.reduce([regions[name] for name in spec['decorations']])
+            alpha=np.asarray(overlays[obj['id']].getchannel('A'))>0
+            out_of_bounds+=int((alpha&~allowed).sum());protected_overlap+=int((alpha&protected).sum())
+        applied_names={obj['id'] for obj in successful}
+        object_validation={name:{'decision':result.get('decision',result.get('status')),
+            'structural_valid':result.get('structural_valid'),'scores':result.get('scores',{}),
+            'warnings':result.get('warnings',[]),'selected_candidate':result.get('selected_candidate'),
+            'retries':result.get('retries',0)} for name,result in data['object_results'].items()}
+        failed_objects=sum(result.get('status') in ('failed','rejected') for result in data['object_results'].values())
+        unscored_objects=sum(result.get('status')=='unscored' for result in data['object_results'].values())
+        (folder/'manifest.json').write_text(json.dumps({'pipeline':VERSION,'spec':spec,'source_hashes':hashes,
+            'objects':[obj for obj in selected if obj['id'] in applied_names],'placements':placements,
+            'geometry_preserved':True,'alpha_preserved':out_of_bounds==0 and protected_overlap==0,
+            'gate_mode':config['mode'],'gate_config_version':config.get('config_version'),
+            'palette_hash':palette_plan.get('plan_hash') if palette_plan else None,
+            'object_results':object_validation,'applied_objects':applied_objects},ensure_ascii=False,indent=2),encoding='utf8')
+        (folder/'validation.json').write_text(json.dumps({'source_hashes_unchanged':unchanged,
+            'alpha_preserved':out_of_bounds==0 and protected_overlap==0,'out_of_bounds_pixels':out_of_bounds,
+            'protected_overlap_px':protected_overlap,'gate_mode':config['mode'],
+            'gate_config_version':config.get('config_version'),'applied_objects':applied_objects,
+            'failed_objects':failed_objects,'unscored_objects':unscored_objects,'objects':object_validation},
+            ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+        if not unchanged:raise ValueError('Source hash changed during generation')
+        if out_of_bounds or protected_overlap:raise ValueError('Final decoration mask violated allowed/protected regions')
+        warnings=list(spec['warnings'])
+        for name,result in data['object_results'].items():
+            warnings += [f'{name}: {warning}' for warning in result.get('warnings',[])]
+            if result.get('error'):warnings.append(f'{name}: {result["error"]}')
+        if not applied_objects:warnings.append('변환 완료 · 적용 0건')
+        warnings.append('미리보기는 정적 이미지입니다. 캐릭터와 반짝임은 적용 후 게임에서 확인하세요.')
+        data.update(status='ready',stage=7,preview='/theme-runs/'+folder.name+'/preview.png',
+            original='/theme-runs/'+folder.name+'/original-map.png',warnings=warnings,
+            failed_objects=failed_objects,unscored_objects=unscored_objects)
+    except Exception as error:
+        data.update(status='failed',error=str(error))
+        if isinstance(error,PaletteUnavailableError):data['failure_kind']='palette_unavailable'
+        if isinstance(error,GateConfigurationError):data['failure_kind']='gate_configuration_error'
     finally:
         save_status(folder,data);busy.release()
 
@@ -407,6 +505,7 @@ def change_list(run_id:str):
 def apply(run_id:str):
     folder=get_folder(run_id);s=json.loads((folder/'status.json').read_text(encoding='utf8'))
     if s['status']!='ready': raise HTTPException(409,'완료된 미리보기만 적용할 수 있습니다.')
+    if s.get('applied_objects',1)<1: raise HTTPException(409,'적용 가능한 오브젝트가 없습니다.')
     manifest=json.loads((folder/'manifest.json').read_text(encoding='utf8'))
     if s.get('mapId','town')!='town':raise HTTPException(409,'이 맵은 /approve 후 브라우저에 저장합니다.')
     if sources(s.get('mapId','town'))[3]!=manifest['source_hashes']: raise HTTPException(409,'원본 맵이 변경됐습니다. 다시 생성해주세요.')
@@ -430,6 +529,7 @@ def approve(run_id:str):
     folder=get_folder(run_id)
     status=json.loads((folder/'status.json').read_text(encoding='utf8'))
     if status['status']!='ready': raise HTTPException(409,'완료된 미리보기만 승인할 수 있습니다.')
+    if status.get('applied_objects',1)<1: raise HTTPException(409,'적용 가능한 오브젝트가 없습니다.')
     if status.get('pipeline') == 'town-plan-v1':
         from contracts import check_folder
         checks = check_folder(folder)
@@ -439,6 +539,11 @@ def approve(run_id:str):
             raise HTTPException(409, '통합 계약/알파 검증을 통과하지 못했습니다.')
     manifest=json.loads((folder/'manifest.json').read_text(encoding='utf8'))
     if sources(status.get('mapId','town'))[3]!=manifest['source_hashes']: raise HTTPException(409,'원본 맵이 변경됐습니다. 다시 생성해주세요.')
+    validation_path=folder/'validation.json'
+    if validation_path.exists():
+        validation=json.loads(validation_path.read_text(encoding='utf8'))
+        if validation.get('source_hashes_unchanged') is not True or validation.get('alpha_preserved',True) is not True:
+            raise HTTPException(409,'원본 해시 또는 최종 마스크 검증에 실패했습니다.')
     image_urls=[item.get('imageUrl','') for item in manifest['placements']]
     image_urls += [item['themeSettings']['tilesetImageUrl'] for item in manifest['placements'] if item.get('themeSettings',{}).get('tilesetImageUrl')]
     for url in image_urls:

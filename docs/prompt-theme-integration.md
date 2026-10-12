@@ -1,5 +1,17 @@
 # FLUX prompt-theme editor
 
+## Palette-based verification gate
+
+The `object-profiles-v1` (`POST /runs`) and `town-plan-v1`/Crypt plan (`POST /integration/runs`) decoration paths use the shared palette gate. For each request, explicit HEX/RGB colors take priority, then reference-image colors, then a real VLM proposal. The plan retains the original palette separately, records color sources and input hashes, and is frozen across retries. A reference image without a selected region uses the full image with a warning. Each run stores `palette-plan.json` and `palette-swatch.png`.
+
+The extractor aligns the generated sprite, uses BOX when shrinking high-resolution output, compares it with the source using ΔE00, then intersects changed pixels with allowed and unprotected regions. Palette distance is diagnostic; it does not remove pixels. Candidate and clipped masks, change and palette-distance maps, pre-snap metrics, corrected overlay and final composite are saved per attempt. Color snapping and final geometry enforcement occur after measurement.
+
+`shadow`, `demo` and `enforce` are separate modes. The default `demo` uses tentative SC/PQ retry levels, makes at most two retries, never retries an unscored result, and selects by O with the earliest candidate winning ties. A low-scoring or unscored but structurally valid result can be applied with an explicit warning. The score estimates are not calibrated against human ratings. `enforce` is rejected until calibrated adopted metrics and thresholds exist; missing required measurements are held as unscored. Per-object failures do not discard other valid objects. A run with zero applied objects stays ready for inspection but cannot be approved.
+
+Configure the actual OpenAI-compatible vision service with `THEME_VLM_URL` and `THEME_VLM_MODEL`. It must support image inputs, `/v1/chat/completions`, top-token log probabilities and the prefilled one-token scoring request. Without this service, text-only palette planning reports `palette_unavailable`; explicit/reference palettes can still be used, and missing visual scores remain null/unscored. The prototype does not substitute prepared model output. Verify model IDs and endpoint features against the running service before a live generation. Tests mock API responses and do not call FLUX or a VLM.
+
+Install `scikit-image` in the server environment for CIEDE2000. Do not infer new decoration support from palette availability: current profile support checks still reject unsupported decorations such as pumpkins or leaves.
+
 Game editor chrome uses the same charcoal/blue palette through scoped `editorWorkspace.css`. Header, asset sidebar, inputs and preview toolbar are restyled without changing the game iframe, source assets, sidebar hover behavior or generation worker.
 
 The style workspace now uses a charcoal/blue review layout, a bounded object selector with select-all/clear controls, a generation progress bar and collapsed advanced DSL controls. Opening the Crypt workspace resumes displaying an existing running batch before the applied result. This only polls status: it does not resume, cancel or restart the worker. The game editor sidebar remains unchanged.

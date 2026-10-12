@@ -18,7 +18,7 @@ The automated generation trials were judged worse than the original hand-tuned d
 
 ## Server-only dependencies
 
-Set `THEME_PROJECT` to the repository's absolute path before importing these modules (their snapshot location differs from the live `style-service` location). Install FastAPI, uvicorn, Pillow, NumPy and requests in a dedicated Python environment. The tests use the repository's town TMX and do not call the GPU.
+Set `THEME_PROJECT` to the repository's absolute path before importing these modules (their snapshot location differs from the live `style-service` location). Install FastAPI, uvicorn, Pillow, NumPy, requests and scikit-image in a dedicated Python environment. The tests use the repository's town TMX and do not call the GPU.
 
 ```powershell
 $env:THEME_PROJECT = (Get-Location).Path
@@ -40,6 +40,16 @@ npx tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --modul
 ```
 
 Real generation requires a running FLUX `/style-transfer` service (`THEME_FLUX_URL`). Browser-local operation does not require `THEME_STATE_URL`. Artifact URLs must return image bytes, not a SPA fallback. The local API reads and writes JSON as UTF-8 on both Windows and Linux.
+
+## Palette-based verification gate
+
+The `feat/style-gate-palette-demo` worktree routes the `object-profiles-v1` and `town-plan-v1`/Crypt plan decoration paths through one shared gate. It freezes one palette plan per request, extracts changed pixels only inside allowed and unprotected geometry, records palette distance before snapping, and saves extracted/fixed overlays, masks, change maps, composites, a palette JSON plan and a color swatch. Palette distance never deletes a candidate pixel. Each object records its score availability, decision, warnings and retries; a structurally valid object can be applied even when another object fails. A ready run with zero applicable objects is not approval-ready.
+
+`gate_config.json` defaults to `demo`. Low SC/PQ estimates can trigger at most two more FLUX requests with the same palette; unscored objects do not retry and remain visibly unscored. These estimates and thresholds are demo heuristics, not calibrated quality claims. `shadow` records decisions without applying them. `enforce` stays unavailable until adopted metrics have calibrated thresholds. A missing required enforce measurement is held as unscored.
+
+Set `THEME_VLM_URL` (OpenAI-compatible server base URL) and `THEME_VLM_MODEL` to enable real palette proposals and visual scoring. Text-only palette plans fail as `palette_unavailable` when that service is missing; explicit colors or a reference image can provide a palette without a proposal call, while visual scores remain unscored if the VLM is unavailable. The model service must support image input, chat completion log probabilities and the configured one-token continuation request. Check `/v1/models` and those request features against the actual deployment before using them; no model name or server capability is assumed by this prototype.
+
+The style UI accepts an optional reference image for Crypt integration runs and links the saved palette swatch. Prompts may specify explicit `#RRGGBB`, `#RGB` or `rgb(r, g, b)` values. A reference image without a selected region uses its full image and records that limitation. This gate does not add pumpkin or leaf support to profiles that do not already support them.
 
 ## Current restored result
 
