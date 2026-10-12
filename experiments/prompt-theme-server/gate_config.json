@@ -1,0 +1,64 @@
+{
+  "mode": "demo",
+  "config_version": "demo-palette-2026-10-12-v2",
+  "vlm": {
+    "url_env": "THEME_VLM_URL",
+    "model_env": "THEME_VLM_MODEL",
+    "timeout": 120
+  },
+  "fix": {
+    "resample": "box",
+    "allowed_mask_filter_size": 5,
+    "enforce_protected_regions": true
+  },
+  "extraction": {
+    "method": "change_mask_with_palette_guidance",
+    "fixed_rgb_decoration_filters": false,
+    "change_delta_e_initial": 5.0,
+    "palette_distance_warn_delta_e_initial": 5.0,
+    "drop_by_palette_distance": false,
+    "respect_allowed_regions": true,
+    "exclude_protected_regions": true,
+    "measure_before_palette_snap": true,
+    "save_stage_images": true,
+    "demo_decorations": ["snow", "lights", "garland"]
+  },
+  "demo": {
+    "retry_below": {"SC": 0.5, "PQ": 0.5},
+    "select_by": "O",
+    "tie_break": "earliest_valid_candidate",
+    "below_threshold_action": "apply_with_warning",
+    "unscored_action": "apply_earliest_structurally_valid_with_warning",
+    "retry_on_unscored": false,
+    "patch_heatmap": false
+  },
+  "retry": {"max_retries": 2, "keep_all_candidates": true},
+  "adopted_metrics": [],
+  "thresholds": {
+    "SC": null,
+    "PQ": null,
+    "O": null,
+    "clip_ratio": null,
+    "palette_shift": null,
+    "grid_sharpness": null,
+    "seam_delta": null
+  },
+  "min_level_mass": 0.5,
+  "calibration": {
+    "status": "deferred_for_demo",
+    "samples": 0,
+    "raters": 0,
+    "krippendorff_alpha": null,
+    "date": null
+  },
+  "palette": {
+    "source_priority": ["explicit", "reference", "ai_proposed"],
+    "freeze_per_request": true,
+    "separate_original_and_decoration": true,
+    "initial_colors_per_decoration": 8,
+    "preserve_explicit_colors": true,
+    "rebuild_from_generated_candidates": false,
+    "snap_target": "allowed_decoration_plus_shared",
+    "unavailable_action": "configuration_error"
+  }
+}

@@ -4,7 +4,8 @@ import { createStyleChangePanel } from './panels/createStyleChangePanel'
 import { styleWorkspaceContext } from './styleWorkspaceContext'
 
 type Spec = { theme: string; decorations: string[]; night: boolean; twinkle: boolean; color: { gain: number[]; bias: number[] }; warnings: string[] }
-type Run = { id: string; mapId?: string; status: string; stage: number; prompt: string; preview?: string; original?: string; error?: string; warnings?: string[]; spec?: Spec; pipeline?: string; current_object?: string; completed_objects?: number; total_objects?: number }
+type ObjectResult = { status?: string; decision?: string; structural_valid?: boolean; scores?: { status?: string; SC?: number | null; PQ?: number | null; O?: number | null }; last_scores?: { status?: string; SC?: number | null; PQ?: number | null; O?: number | null }; warnings?: string[]; retries?: number; selected_candidate?: number | null }
+type Run = { id: string; mapId?: string; status: string; stage: number; prompt: string; preview?: string; original?: string; error?: string; warnings?: string[]; spec?: Spec; pipeline?: string; current_object?: string; completed_objects?: number; total_objects?: number; gate_mode?: string; gate_config_version?: string; palette_hash?: string; palette_plan?: string; palette_swatch?: string; object_results?: Record<string, ObjectResult>; applied_objects?: number; failed_objects?: number; unscored_objects?: number }
 const stages = ['프롬프트 해석', 'TMX 추출 · 단독 인식 · 개별 계획', '색·명암 보정', 'FLUX 장식 생성', '원본 좌표 정렬', '밤·반짝임', '미리보기/적용']
 
 export const createPromptThemePage = (mountElement: HTMLElement): void => {
@@ -70,8 +71,32 @@ export const createPromptThemePage = (mountElement: HTMLElement): void => {
       documentHint.textContent = `${file.name} · 준비됨. 분석 후 문단 근거와 영어 DSL을 검토하세요.`
     } catch (e) { error(e) } finally { inputMode.disabled = false }
   }
+  const referenceInput = document.createElement('input')
+  referenceInput.type = 'file'; referenceInput.accept = 'image/png,image/jpeg,image/webp'
+  referenceInput.setAttribute('aria-label', '팔레트 참고 이미지')
+  let referenceImageData: string | undefined
+  let referenceRead: Promise<string | undefined> | undefined
+  let referenceReadError = false
+  referenceInput.onchange = () => {
+    const file = referenceInput.files?.[0]
+    referenceImageData = undefined
+    referenceRead = undefined
+    referenceReadError = false
+    if (!file) return
+    if (file.size > 8 * 1024 * 1024) { error(new Error('참고 이미지는 8MB 이하로 선택해주세요.')); referenceInput.value = ''; return }
+    const reader = new FileReader()
+    referenceRead = new Promise(resolve => {
+      reader.onload = () => {
+        referenceImageData = typeof reader.result === 'string' ? reader.result : undefined
+        resolve(referenceImageData)
+      }
+      reader.onerror = () => { referenceReadError = true; error(new Error('참고 이미지를 읽지 못했습니다.')); resolve(undefined) }
+    })
+    reader.readAsDataURL(file)
+  }
   const status = document.createElement('pre')
   status.className = 'lab-log'
+  const paletteLink = document.createElement('a'); paletteLink.textContent = '팔레트 견본 열기'; paletteLink.target = '_blank'; paletteLink.rel = 'noopener'; paletteLink.hidden = true
   const objects = document.createElement('div')
   objects.className = 'lab-objects'
   const previews = document.createElement('div')
@@ -152,7 +177,7 @@ export const createPromptThemePage = (mountElement: HTMLElement): void => {
   const error = (e: unknown): void => { status.textContent = '오류: '+(e instanceof Error ? e.message : String(e)); progress.textContent = status.textContent }
   const show = (run: Run): void => {
     if ((run.mapId ?? 'town') !== context.mapId) { apply.disabled = true; error(new Error('다른 맵의 결과입니다. 현재 맵은 '+context.mapId)); return }
-    const labels: Record<string,string> = { ready: '생성 완료 · 원본과 비교한 뒤 승인해주세요.', running: 'FLUX 생성 중 · 수분이 걸릴 수 있습니다.', queued: '생성 대기 중', failed: '생성 실패 · 상세 기록을 확인해주세요.' }
+    const labels: Record<string,string> = { ready: run.applied_objects === 0 ? '생성 완료 · 적용 0건 · 원본을 유지합니다.' : '생성 완료 · 원본과 비교한 뒤 승인해주세요.', running: 'FLUX 생성 · 검증 중 · 수분이 걸릴 수 있습니다.', queued: '생성 대기 중', failed: '생성 실패 · 상세 기록을 확인해주세요.' }
     labels.review_required = '생성 처리 종료 · 실패 항목과 장식 잘림을 검수해주세요.'
     setProgress(['ready','review_required'].includes(run.status) ? 3 : 2, (labels[run.status] ?? run.status) + (run.current_object ? ` · ${run.current_object} (${run.completed_objects ?? 0}/${run.total_objects ?? 0})` : ''))
     meter.value = run.status === 'ready' ? 100 : (run.completed_objects ?? 0) / Math.max(1, run.total_objects ?? 1) * 100
@@ -160,9 +185,22 @@ export const createPromptThemePage = (mountElement: HTMLElement): void => {
 
     status.textContent = stages.map((s,i) => `${i+1}. ${s} ${i+1<run.stage?'✓':i+1===run.stage?'←':''}`).join('\n')+'\n상태: '+run.status+(run.error?'\n'+run.error:'')+'\n'+(run.warnings??[]).join('\n')
     status.textContent += '\n방식: '+(run.pipeline ?? '이전 공통 장식 방식')+(run.current_object ? `\n대상: ${run.current_object} · ${run.completed_objects ?? 0}/${run.total_objects ?? 0} 완료` : '')
+    if (run.gate_mode) {
+      status.textContent += `\n검증 게이트: ${run.gate_mode} ${run.gate_config_version ?? ''} · 적용 ${run.applied_objects ?? 0} · 제외 ${run.failed_objects ?? 0} · 평가 불가 ${run.unscored_objects ?? 0}`
+      if (run.palette_hash) status.textContent += `\n요청 팔레트: ${run.palette_hash.slice(0, 12)} · ${run.palette_plan ?? '저장됨'}`
+      for (const [id, result] of Object.entries(run.object_results ?? {})) {
+        const scores = result.scores ?? result.last_scores
+        const scoreText = scores ? `SC ${scores.SC == null ? '—' : scores.SC.toFixed(2)} · PQ ${scores.PQ == null ? '—' : scores.PQ.toFixed(2)} · O ${scores.O == null ? '—' : scores.O.toFixed(2)}` : '점수 대기'
+        status.textContent += `\n${id}: ${result.decision ?? result.status ?? '대기'} · ${scoreText} · 재생성 ${result.retries ?? 0}회`
+      }
+    }
+    if (run.palette_swatch) {
+      paletteLink.href = run.palette_swatch
+      paletteLink.hidden = false
+    } else paletteLink.hidden = true
     needsVisualReview = run.status === 'review_required' && run.pipeline === 'town-vision-v1'
     apply.textContent = needsVisualReview ? '검수 완료 · 승인 후 적용' : '게임에 적용하기 →'
-    apply.disabled = (!needsVisualReview && run.status !== 'ready') || applying
+    apply.disabled = (!needsVisualReview && run.status !== 'ready') || run.applied_objects === 0 || applying
     applyHint.textContent = run.pipeline === 'town-plan-v1' || run.pipeline === 'town-vision-v1'
       ? `통합 결과: 이전 ${context.mapId} 테마를 백업 후 전체 교체합니다. 다른 맵과 수동 배치는 유지합니다.`
       : '결과를 확인했나요? 선택한 오브젝트의 장식만 교체합니다.'
@@ -228,8 +266,10 @@ export const createPromptThemePage = (mountElement: HTMLElement): void => {
       if (!targets.length) throw new Error('대상을 하나 이상 선택해주세요.')
       if (context.crypt && !automaticContract) throw new Error('먼저 프롬프트를 해석해주세요.')
       if (!context.crypt && !visionPlanId) throw new Error('먼저 단독 인식과 LLM 계획을 실행해주세요.')
+      if (referenceRead) referenceImageData = await referenceRead
+      if (referenceReadError) throw new Error('참고 이미지 읽기를 확인한 뒤 다시 실행해주세요.')
       const run=await api(context.crypt ? '/integration/runs' : '/town-vision/runs',context.crypt
-        ? {...automaticContract, mapId:context.mapId, plan:automaticContract!.plan.filter(row=>targets.includes(row.asset))}
+        ? {...automaticContract, mapId:context.mapId, reference_image:referenceImageData, plan:automaticContract!.plan.filter(row=>targets.includes(row.asset))}
         : {plan_id:visionPlanId,targets}) as {id:string}
       runId=run.id;void poll()
     } catch(e) {error(e);generate.disabled=false;analyze.disabled=false;prompt.readOnly=false;inputMode.disabled=false}
@@ -304,7 +344,8 @@ export const createPromptThemePage = (mountElement: HTMLElement): void => {
     select.onclick = () => objects.querySelectorAll<HTMLInputElement>('input').forEach(input => { if (!input.disabled) input.checked = checked })
     selectionTools.append(select)
   }
-  inputCard.append(sectionTitle('어떤 분위기를 만들까요?', '문서 또는 테마 프롬프트를 선택하세요. 원본 구조는 유지합니다.'), inputMode, documentInput, documentHint, requirementReview, promptLabel, prompt, specTags, controls, sectionTitle('변환 대상', '대상을 확인한 뒤 필요한 오브젝트만 선택하세요.'), selectionTools, objects)
+  const referenceLabel = document.createElement('label'); referenceLabel.textContent = '팔레트 참고 이미지 (선택)'; referenceLabel.append(referenceInput); referenceLabel.hidden = !context.crypt
+  inputCard.append(sectionTitle('어떤 분위기를 만들까요?', '문서 또는 테마 프롬프트를 선택하세요. 원본 구조는 유지합니다.'), inputMode, documentInput, documentHint, requirementReview, promptLabel, prompt, referenceLabel, specTags, controls, sectionTitle('변환 대상', '대상을 확인한 뒤 필요한 오브젝트만 선택하세요.'), selectionTools, objects)
   controls.replaceChildren(analyze, generate)
   const outputCard = document.createElement('section'); outputCard.className = 'lab-card lab-output'
   const previewHead = sectionTitle('미리보기 · 비교', '이미지를 누르면 원본 크기로 볼 수 있습니다. 승인 전에는 게임이 바뀌지 않습니다.')
@@ -314,7 +355,7 @@ export const createPromptThemePage = (mountElement: HTMLElement): void => {
   applyRow.append(applyHint, apply)
   const debug = document.createElement('details'); debug.className = 'lab-details'
   const debugTitle = document.createElement('summary'); debugTitle.textContent = '상세 설정 · 진행 로그'
-  debug.append(debugTitle, status)
+  debug.append(debugTitle, paletteLink, status)
   outputCard.append(previewHead, progress, meter, previews, applyRow, debug)
   layout.append(inputCard, outputCard)
   // Change List (Generate) + Asset Details (Review) for the opened run; read-only.

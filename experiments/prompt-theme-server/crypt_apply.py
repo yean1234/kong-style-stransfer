@@ -6,6 +6,7 @@ from run_records import record_event
 def publish(repo, folder, expected_active_id=None):
     status=json.loads((folder/'status.json').read_text(encoding='utf8'))
     if status['status']!='ready': raise ValueError('검수 완료된 Crypt 결과만 적용할 수 있습니다.')
+    if status.get('applied_objects',1)<1: raise ValueError('적용 가능한 오브젝트가 없습니다.')
     manifest=json.loads((folder/'crypt-manifest.json').read_text(encoding='utf8'))
     # Older Windows runs recorded native separators; runtime keys use URL paths.
     hashes=manifest['source_hashes']
@@ -25,6 +26,7 @@ def publish(repo, folder, expected_active_id=None):
         if len(report) < 6 or any(report.values()): raise ValueError('통합 계약 검증 실패')
         validation = json.loads((folder/'validation.json').read_text(encoding='utf8'))
         if validation.get('all_variant_alpha_preserved') is not True: raise ValueError('알파 검증 실패')
+        if validation.get('source_hashes_unchanged') is not True: raise ValueError('원본 해시 검증 실패')
         current = json.loads((repo/f'public/crypt-style/active-{map_id}.json').read_text(encoding='utf8'))
         if expected_active_id is None and current['id'] not in (manifest['parent_run_id'], manifest['id']):
             raise ValueError('생성 이후 적용 맵이 바뀌었습니다. 최신 결과에서 다시 시작해주세요.')

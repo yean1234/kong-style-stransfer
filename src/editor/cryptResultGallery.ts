@@ -6,6 +6,7 @@ document.head.append(style)
 const title = document.createElement('h1')
 title.textContent = 'Crypt 마을 · 크리스마스 밤'
 const summary = document.createElement('p')
+const paletteSwatch = document.createElement('a'); paletteSwatch.textContent = '팔레트 견본 열기'; paletteSwatch.target = '_blank'; paletteSwatch.rel = 'noopener'; paletteSwatch.hidden = true
 const maps = document.createElement('section'); maps.className = 'maps'
 for (const [filename, label] of [['original-map.png', '원본'], ['preview.png', '밤 + FLUX 장식 미리보기']]) {
   const card = document.createElement('div'); card.className = 'card'
@@ -17,7 +18,7 @@ for (const [filename, label] of [['original-map.png', '원본'], ['preview.png',
 }
 const cards = document.createElement('section'); cards.className = 'cards'
 const game = document.createElement('section'); game.className = 'card'
-document.body.append(title, summary, maps, document.createElement('hr'), cards, game)
+document.body.append(title, summary, paletteSwatch, maps, document.createElement('hr'), cards, game)
 const refresh = async () => {
   const [spec, status] = await Promise.all([
     fetch('sources.json', {cache:'no-store'}).then(r => r.json()),
@@ -25,7 +26,9 @@ const refresh = async () => {
   ])
   title.textContent = status.mapId === 'town' ? `마을(town) · ${status.prompt || '스타일 변환'}` : status.mapId === 'floor-1-ruins' ? '1층 폐허 마을 · 겨울 변환' : 'Crypt 마을 · 크리스마스 밤'
   document.title = title.textContent
-  summary.textContent = `${status.status} · ${status.completed_objects ?? 0}/${status.total_objects}종 · ${status.instances}곳 배치 · 원본 형태/충돌 유지 · FLUX 장식만 별도 레이어`
+  summary.textContent = `${status.status} · ${status.completed_objects ?? 0}/${status.total_objects}종 · ${status.instances}곳 배치 · 적용 ${status.applied_objects ?? 0} · 제외 ${status.failed_objects ?? 0} · 평가 불가 ${status.unscored_objects ?? 0} · ${status.gate_mode ?? '이전 게이트'} ${status.gate_config_version ?? ''}`
+  paletteSwatch.hidden = !status.palette_swatch
+  if (status.palette_swatch) paletteSwatch.href = status.palette_swatch
   const revision = String(status.preview_revision ?? status.completed_objects ?? 0)
   if (status.game_preview && !game.childElementCount) {
     const heading = document.createElement('h2'); heading.textContent = '게임 적용 확인 · 브라우저 검증 화면'
@@ -37,7 +40,7 @@ const refresh = async () => {
     if (img.dataset.revision !== revision) { img.src = `${status.preview}?v=${revision}`; img.dataset.revision = revision }
   }
   cards.replaceChildren()
-  const planAssets: Set<string> | undefined = status.pipeline === 'crypt-ruins-plan-v1'
+  const planAssets: Set<string> | undefined = ['crypt-ruins-plan-v1','town-plan-v1'].includes(status.pipeline)
     ? new Set((await fetch('plan.json').then(r => r.json())).map((row: {asset: string}) => row.asset))
     : undefined
   if (planAssets) summary.textContent += ' · 선택하지 않은 오브젝트는 이전 결과 유지'
@@ -50,11 +53,14 @@ const refresh = async () => {
     const pair = document.createElement('div'); pair.className = 'pair'
     const original = new Image(); original.src = `${variant.id}-original.png`; original.alt = '원본'
     pair.append(original)
-    if (result.status === 'ready') {
+    if (['applied','applied_with_warning','unscored','recorded','passed','ready'].includes(result.status)) {
       const output = new Image(); output.src = `${variant.id}/composite.png?v=${revision}`; output.alt = '원본 + FLUX 장식'; pair.append(output)
     }
     const time = document.createElement('p')
-    time.textContent = result.shared_request ? `공유 시트 FLUX 요청 ${Math.round(result.generation_seconds)}초 (개별 생성 시간이 아닙니다)` : result.reused_from ? `생성 원본 재사용 · 원래 생성 ${Math.round(result.generation_seconds ?? 204)}초` : result.generation_seconds ? `FLUX 요청 ${Math.round(result.generation_seconds)}초` : result.status ?? '대기'
+    const scores = result.scores ?? {}
+    const scoreText = scores.status === 'scored' ? `AI 추정 · SC ${scores.SC?.toFixed(2) ?? '—'} · PQ ${scores.PQ?.toFixed(2) ?? '—'} · O ${scores.O?.toFixed(2) ?? '—'}` : scores.status === 'unscored' ? `AI 평가 불가${scores.reason ? ` · ${scores.reason}` : ''}` : ''
+    time.textContent = [result.decision ?? result.status ?? '대기', scoreText, `재생성 ${result.retries ?? 0}회`, result.shared_request ? `공유 시트 FLUX 요청 ${Math.round(result.generation_seconds)}초 (개별 생성 시간이 아닙니다)` : result.reused_from ? '기존 FLUX 출력 재사용 · 새 생성 아님' : result.generation_seconds ? `FLUX 요청 ${Math.round(result.generation_seconds)}초` : ''].filter(Boolean).join(' · ')
+    if (result.warnings?.length) time.textContent += ` · ${result.warnings.join(', ')}`
     if (result.frost_only) time.textContent += ' · 눈 장식 미검출: 서리 색 보정만 적용'
     const link = document.createElement('a'); link.href = `${result.shared_request ?? variant.id}/generation.json`; link.textContent = '생성 설정'
     card.append(name, pair, time, link); cards.append(card)
