@@ -1,6 +1,6 @@
 {
   "mode": "demo",
-  "config_version": "demo-palette-2026-10-12-v2",
+  "config_version": "demo-palette-2026-10-13-v3",
   "vlm": {
     "url_env": "THEME_VLM_URL",
     "model_env": "THEME_VLM_MODEL",
@@ -33,6 +33,17 @@
     "patch_heatmap": false
   },
   "retry": {"max_retries": 2, "keep_all_candidates": true},
+  "problem_heatmap": {
+    "enabled": true,
+    "source_tolerance_rgb": 20,
+    "fragment_px": 3,
+    "thin_support_radius_px": 1.5,
+    "small_object_px": 600,
+    "crop_seam_px": 2,
+    "min_decoration_px": 4,
+    "decoration_class_delta_e": 20,
+    "calibrated": false
+  },
   "adopted_metrics": [],
   "thresholds": {
     "SC": null,

@@ -12,6 +12,27 @@ Configure the actual OpenAI-compatible vision service with `THEME_VLM_URL` and `
 
 Install `scikit-image` in the server environment for CIEDE2000. Do not infer new decoration support from palette availability: current profile support checks still reject unsupported decorations such as pumpkins or leaves.
 
+### Problem heatmap (RichHF-style, diagnostic)
+
+`problem_heatmap.py` adds a RichHF-shaped output to every non-empty gate candidate: a per-pixel problem map and a list of missing requested decorations. It is computed from the gate's own source, generated image, final overlay and clipped mask. No model is called. It never changes a decision, retry or selection, and its thresholds (`problem_heatmap` in `gate_config.json`) are uncalibrated.
+
+| Class | Meaning |
+| --- | --- |
+| `cutout_leak` | An overlay pixel inside the source silhouette whose generated color stays inside the local 3x3 source color range (± tolerance). It is a resampled or drifted source pixel, not new decoration material. |
+| `background_fringe` | The same test outside the silhouette: gray background mixed into the decoration edge. |
+| `cut_edge` | An overlay pixel next to a changed pixel removed by the allowed/protected masks. |
+| `fragment` | An overlay component smaller than `fragment_px`. |
+| `small_support` | Decoration attached to a source part thinner than about 3 px, or to an object with fewer than `small_object_px` opaque pixels. |
+| `crop_seam` | Decoration within `crop_seam_px` of a crop edge where the source continues (a TSX fragment cut from a larger sprite). |
+
+Missing decorations come from two sources: `palette_class` (fewer than `min_decoration_px` non-leak overlay pixels near that decoration's own palette colors) and `vlm_sc` (a scored per-decoration SC below the demo retry level).
+
+Each attempt saves `problem-heatmap.png` (view with legend), `problem-classes.png` (class colors at native size), `problem-map.png` (soft 0-255 map) and `problems.json`. The selected attempt's files are copied to the object folder, and `gate.json` holds the summary under `problems`. Town-plan and Crypt finalization paint the placed objects' classes on a dimmed preview as `problem-heatmap-map.png` (marks widened by one pixel for visibility) with `problems-map.json`, and the result gallery shows both. Re-analyze a saved run without regenerating: `python experiments/prompt-theme-server/problem_heatmap.py RUN_ID_OR_DIR`.
+
+Limitation: the leak test catches blur, shift and color drift of existing source colors. A generated texture that is not a blend of nearby source colors is not flagged. On simulated FLUX-like drift over eight town groups, `cutout_leak` + `background_fringe` reached about 0.98 precision and 0.88-0.92 recall against known leak pixels. This is a simulation result, not a measurement on real FLUX output.
+
+`rahf_probe.py` optionally runs the community RichHF/RAHF reimplementation (github.com/youweiliang/RichHF; non-commercial weights) on saved composites for comparison. In a zero-shot probe on the same simulated leaks, its implausibility map separated leak pixels from other object pixels with only 0.58-0.87 AUC, mostly highlighted correctly added bulbs, and its misaligned-word output marked "pixel art" instead of missing decorations. Use it only as a comparison aid until it is fine-tuned on our own labeled sprites.
+
 Game editor chrome uses the same charcoal/blue palette through scoped `editorWorkspace.css`. Header, asset sidebar, inputs and preview toolbar are restyled without changing the game iframe, source assets, sidebar hover behavior or generation worker.
 
 The style workspace now uses a charcoal/blue review layout, a bounded object selector with select-all/clear controls, a generation progress bar and collapsed advanced DSL controls. Opening the Crypt workspace resumes displaying an existing running batch before the applied result. This only polls status: it does not resume, cancel or restart the worker. The game editor sidebar remains unchanged.

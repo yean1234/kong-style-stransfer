@@ -10,6 +10,7 @@ from run_records import record_event
 from decoration_extractor import extract_changes,fix_overlay
 from palette_planner import build_palette_plan, save_palette_swatch
 from style_gate import gate_config,run_candidates
+from problem_heatmap import compose_map
 
 PILOT='0950597acc8648d180c6b0c24ecf3d62'
 
@@ -212,15 +213,16 @@ def run(run_id):
     finally:lock.unlink(missing_ok=True)
 
 def finalize(folder,spec,status):
-    original=Image.open(folder/'original-map.png').convert('RGBA');overlay=Image.new('RGBA',original.size);bulbs=[]
+    original=Image.open(folder/'original-map.png').convert('RGBA');overlay=Image.new('RGBA',original.size);bulbs=[];placed=[]
     gate_mode=status.get('gate_mode','shadow');apply_statuses={'applied','applied_with_warning','unscored','recorded','passed'}
     for p in spec['instances']:
         result=status['object_results'].get(p['asset'],{})
         if result.get('status') not in apply_statuses or gate_mode=='shadow' or (gate_mode=='enforce' and result.get('status')!='passed'):continue
-        deco=Image.open(folder/p['asset']/'decoration.png').convert('RGBA');overlay.alpha_composite(deco,(p['x'],p['y']))
+        deco=Image.open(folder/p['asset']/'decoration.png').convert('RGBA');overlay.alpha_composite(deco,(p['x'],p['y']));placed.append(p)
     overlay.save(folder/'decoration-map.png')
     night=Image.alpha_composite(original,Image.new('RGBA',original.size,(12,23,58,130)))
     Image.alpha_composite(night,overlay).save(folder/'preview.png')
+    problem_map=compose_map(folder,placed)
     manifest={'id':folder.name,'mapId':'floor-0-town','width':original.width,'height':original.height,'night':.51,'overlay':f'/theme-runs/{folder.name}/decoration-map.png','bulbs':bulbs,'source_hashes':{k.replace('\\','/'):v for k,v in spec['hashes'].items()},'instances':len(spec['instances']),'geometry_preserved':True,'collision_preserved':True,'gate_mode':gate_mode,'gate_config_version':status.get('gate_config_version'),'palette_hash':status.get('palette_hash')}
     (folder/'crypt-manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf8')
     applied={name for name,result in status['object_results'].items() if result.get('status') in apply_statuses and gate_mode!='shadow'
@@ -242,7 +244,8 @@ def finalize(folder,spec,status):
     if not applied:warnings.append('변환 완료 · 적용 0건')
     warnings.append('전구 위치는 색상 규칙으로 추정하지 않아 반짝임 위치를 기록하지 않았습니다.')
     status.update(status='ready',stage=7,preview_revision=time.time(),preview=f'/theme-runs/{folder.name}/preview.png',
-        warnings=warnings,applied_objects=len(applied),failed_objects=failed,unscored_objects=unscored)
+        warnings=warnings,applied_objects=len(applied),failed_objects=failed,unscored_objects=unscored,
+        problem_heatmap_map=f'/theme-runs/{folder.name}/problem-heatmap-map.png' if problem_map else None)
     save_status(folder,status)
 
 if __name__=='__main__':

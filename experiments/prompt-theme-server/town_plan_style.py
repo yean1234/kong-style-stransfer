@@ -14,6 +14,7 @@ from contracts import Dsl, Plan, check_folder
 import groups_tsx
 from palette_planner import build_palette_plan, save_palette_swatch
 from style_gate import gate_config, run_candidates
+from problem_heatmap import compose_map
 
 MAP = 'src/games/my-sample-rpg/assets/maps/town.tmx'
 PIPELINE = 'town-plan-v1'
@@ -195,7 +196,7 @@ def finalize(folder, status, plan, spec):
     save_status(folder, status)
     original = Image.open(folder/'original-map.png').convert('RGBA')
     decoration_map, recolor_map = Image.new('RGBA', original.size), Image.new('RGBA', original.size)
-    out_of_bounds, warnings = 0, []
+    out_of_bounds, warnings, placed = 0, [], []
     actions = {row['asset']: row['action'] for row in plan}
     rows_by_name = {row['asset']: row for row in plan}
     mode = status.get('gate_mode', 'shadow')
@@ -220,6 +221,7 @@ def finalize(folder, status, plan, spec):
             permitted=np.logical_or.reduce(list(allowed.values()))
             out_of_bounds += int(((np.array(overlay)[:,:,3]>0)&(~permitted|protected)).sum())
             decoration_map.alpha_composite(overlay, (x, y))
+            placed.append(instance)
         elif actions[name] == 'recolor':
             recolor_map.alpha_composite(Image.open(folder/name/'composite.png').convert('RGBA'), (x, y))
     decoration_map.save(folder/'decoration-map.png')
@@ -228,6 +230,7 @@ def finalize(folder, status, plan, spec):
     if status['spec']['night']: preview = Image.alpha_composite(preview, Image.new('RGBA', preview.size, (7, 19, 46, 148)))
     Image.alpha_composite(preview, decoration_map).save(folder/'preview.png')
     run_id = folder.name
+    problem_map = compose_map(folder, placed)
     settings = {'runId': run_id, 'night': NIGHT if status['spec']['night'] else 0, 'twinkle': status['spec']['twinkle'], 'color': {'gain': [1, 1, 1], 'bias': [0, 0, 0]}}
     Image.new('RGBA', (1, 1)).save(folder/'settings.png')
     placement = lambda pid, url: {'id': f'{run_id}-{pid}', 'kind': 'object', 'col': 0, 'row': 0, 'imageUrl': f'/theme-runs/{run_id}/{url}',
@@ -279,7 +282,8 @@ def finalize(folder, status, plan, spec):
     problems = {name: error for name, error in check_folder(folder).items() if error}
     if problems or not unchanged or out_of_bounds: raise ValueError(f'contract/source/alpha check failed: {problems}, unchanged={unchanged}, overflow={out_of_bounds}')
     status.update(status='ready', stage=7, preview=f'/theme-runs/{run_id}/preview.png', preview_revision=time.time(), warnings=warnings,
-        applied_objects=len(applied_names),failed_objects=failed_objects,unscored_objects=unscored_objects)
+        applied_objects=len(applied_names),failed_objects=failed_objects,unscored_objects=unscored_objects,
+        problem_heatmap_map=f'/theme-runs/{run_id}/problem-heatmap-map.png' if problem_map else None)
     save_status(folder, status)
     record_event(folder, 'finalized', instances=len(spec['instances']), out_of_bounds_pixels=out_of_bounds)
 

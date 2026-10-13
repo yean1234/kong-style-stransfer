@@ -49,6 +49,8 @@ The `feat/style-gate-palette-demo` worktree routes the `object-profiles-v1` and 
 
 Set `THEME_VLM_URL` (OpenAI-compatible server base URL) and `THEME_VLM_MODEL` to enable real palette proposals and visual scoring. Text-only palette plans fail as `palette_unavailable` when that service is missing; explicit colors or a reference image can provide a palette without a proposal call, while visual scores remain unscored if the VLM is unavailable. The model service must support image input, chat completion log probabilities and the configured one-token continuation request. Check `/v1/models` and those request features against the actual deployment before using them; no model name or server capability is assumed by this prototype.
 
+Each non-empty candidate also gets a diagnostic RichHF-style problem heatmap (`problem_heatmap.py`): cutout leaks, background fringes, cut edges, fragments, thin or small supports, crop seams and missing decorations. It does not affect decisions. `python problem_heatmap.py RUN_ID_OR_DIR` re-analyzes a saved run and composes `problem-heatmap-map.png`. `rahf_probe.py` is an optional, non-commercial RAHF comparison. See [the integration guide](../../docs/prompt-theme-integration.md#problem-heatmap-richhf-style-diagnostic).
+
 The style UI accepts an optional reference image for Crypt integration runs and links the saved palette swatch. Prompts may specify explicit `#RRGGBB`, `#RGB` or `rgb(r, g, b)` values. A reference image without a selected region uses its full image and records that limitation. This gate does not add pumpkin or leaf support to profiles that do not already support them.
 
 ## Current restored result

@@ -7,6 +7,7 @@ from PIL import Image
 
 from decoration_extractor import extract_changes, fix_overlay
 from level_scorer import pq_scores, sc_scores
+from problem_heatmap import FILES as PROBLEM_FILES, analyze as analyze_problems
 
 
 CONFIG_PATH = Path(__file__).with_name('gate_config.json')
@@ -154,6 +155,13 @@ def _evaluate_candidate(candidate_dir, original, generated, high_resolution, all
         'palette_snap_applied': True,
         'composite_path': 'composite.png'
     }
+    if config.get('problem_heatmap', {}).get('enabled') and not metrics['empty']:
+        # Diagnostic only: the decision never reads it, and its failure must not reject a candidate.
+        try:
+            report['problems'] = analyze_problems(original, extraction['aligned'], overlay, extraction['clipped'],
+                                                  palette_plan, decorations, scores, config, candidate_dir)
+        except Exception as error:
+            report['problems_error'] = f'{type(error).__name__}: {error}'
     (candidate_dir / 'gate.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return report, overlay
 
@@ -260,6 +268,9 @@ def run_candidates(folder, original, decorations, theme, palette_plan, allowed_m
         overlay = Image.open(folder / f"attempt-{chosen['candidate']:02d}" / 'overlay-fixed.png').convert('RGBA')
         overlay.save(folder / 'decoration.png')
         Image.alpha_composite(original.convert('RGBA'), overlay).save(folder / 'composite.png')
+        if chosen.get('problems'):
+            for name in PROBLEM_FILES:
+                (folder / name).write_bytes((folder / f"attempt-{chosen['candidate']:02d}" / name).read_bytes())
     result = {
         'status': decision,
         'decision': decision,
@@ -267,6 +278,7 @@ def run_candidates(folder, original, decorations, theme, palette_plan, allowed_m
         'structural_valid': bool(chosen),
         'scores': chosen['scores'] if chosen else {'status': 'unscored', 'SC': None, 'PQ': None, 'O': None},
         'metrics': chosen['metrics'] if chosen else {},
+        'problems': chosen.get('problems') if chosen else None,
         'warnings': list(dict.fromkeys(warnings + (chosen['warnings'] if chosen else []))),
         'selected_candidate': chosen['candidate'] if chosen else None,
         'retries': max(0, len(candidates) - 1),

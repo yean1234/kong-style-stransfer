@@ -1,7 +1,7 @@
 const runId = location.pathname.split('/')[2]
 document.title = 'Crypt 마을 · 크리스마스 변환 결과'
 const style = document.createElement('style')
-style.textContent = 'body{margin:24px;background:#171b25;color:#e8edf7;font:16px system-ui}a{color:#efc781}h1{font-size:28px}.maps,.cards{display:grid;gap:16px}.maps{grid-template-columns:1fr 1fr}.cards{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}.card{background:#262d3b;padding:18px;border-radius:12px}.pair{display:flex;gap:12px;height:170px;align-items:center}.pair img{width:46%;max-height:170px;object-fit:contain;image-rendering:pixelated;background:#414653}.maps img{width:100%;image-rendering:pixelated}button{color:#17202b}small{color:#b2bed2}@media(max-width:700px){.maps{grid-template-columns:1fr}}'
+style.textContent = 'body{margin:24px;background:#171b25;color:#e8edf7;font:16px system-ui}a{color:#efc781}h1{font-size:28px}.maps,.cards{display:grid;gap:16px}.maps{grid-template-columns:1fr 1fr}.cards{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}.card{background:#262d3b;padding:18px;border-radius:12px}.pair{display:flex;gap:12px;height:170px;align-items:center}.pair img{flex:1;min-width:0;max-height:170px;object-fit:contain;image-rendering:pixelated;background:#414653}.maps img{width:100%;image-rendering:pixelated}button{color:#17202b}small{color:#b2bed2}@media(max-width:700px){.maps{grid-template-columns:1fr}}'
 document.head.append(style)
 const title = document.createElement('h1')
 title.textContent = 'Crypt 마을 · 크리스마스 밤'
@@ -16,6 +16,10 @@ for (const [filename, label] of [['original-map.png', '원본'], ['preview.png',
   else img.dataset.preview = 'true'
   card.append(heading, img); maps.append(card)
 }
+const problemMap = document.createElement('div'); problemMap.className = 'card'; problemMap.hidden = true
+const problemMapHeading = document.createElement('h2'); problemMapHeading.textContent = '문제 위치 히트맵 · 규칙 기반 추정(미보정)'
+const problemMapImage = new Image(); problemMapImage.alt = '문제 위치 히트맵'
+problemMap.append(problemMapHeading, problemMapImage); maps.append(problemMap)
 const cards = document.createElement('section'); cards.className = 'cards'
 const game = document.createElement('section'); game.className = 'card'
 document.body.append(title, summary, paletteSwatch, maps, document.createElement('hr'), cards, game)
@@ -39,6 +43,8 @@ const refresh = async () => {
     const img = maps.querySelector<HTMLImageElement>('[data-preview]')!
     if (img.dataset.revision !== revision) { img.src = `${status.preview}?v=${revision}`; img.dataset.revision = revision }
   }
+  problemMap.hidden = !status.problem_heatmap_map
+  if (status.problem_heatmap_map && problemMapImage.dataset.revision !== revision) { problemMapImage.src = `${status.problem_heatmap_map}?v=${revision}`; problemMapImage.dataset.revision = revision }
   cards.replaceChildren()
   const planAssets: Set<string> | undefined = ['crypt-ruins-plan-v1','town-plan-v1'].includes(status.pipeline)
     ? new Set((await fetch('plan.json').then(r => r.json())).map((row: {asset: string}) => row.asset))
@@ -56,12 +62,21 @@ const refresh = async () => {
     if (['applied','applied_with_warning','unscored','recorded','passed','ready'].includes(result.status)) {
       const output = new Image(); output.src = `${variant.id}/composite.png?v=${revision}`; output.alt = '원본 + FLUX 장식'; pair.append(output)
     }
+    if (result.problems) {
+      const heatmap = new Image(); heatmap.src = `${variant.id}/problem-heatmap.png?v=${revision}`; heatmap.alt = '문제 위치 히트맵'
+      heatmap.style.cursor = 'zoom-in'; heatmap.onclick = () => window.open(heatmap.src, '_blank', 'noopener'); pair.append(heatmap)
+    }
     const time = document.createElement('p')
     const scores = result.scores ?? {}
     const scoreText = scores.status === 'scored' ? `AI 추정 · SC ${scores.SC?.toFixed(2) ?? '—'} · PQ ${scores.PQ?.toFixed(2) ?? '—'} · O ${scores.O?.toFixed(2) ?? '—'}` : scores.status === 'unscored' ? `AI 평가 불가${scores.reason ? ` · ${scores.reason}` : ''}` : ''
     time.textContent = [result.decision ?? result.status ?? '대기', scoreText, `재생성 ${result.retries ?? 0}회`, result.shared_request ? `공유 시트 FLUX 요청 ${Math.round(result.generation_seconds)}초 (개별 생성 시간이 아닙니다)` : result.reused_from ? '기존 FLUX 출력 재사용 · 새 생성 아님' : result.generation_seconds ? `FLUX 요청 ${Math.round(result.generation_seconds)}초` : ''].filter(Boolean).join(' · ')
     if (result.warnings?.length) time.textContent += ` · ${result.warnings.join(', ')}`
     if (result.frost_only) time.textContent += ' · 눈 장식 미검출: 서리 색 보정만 적용'
+    if (result.problems) {
+      const found = Object.values(result.problems.classes as Record<string, {px: number, label: string}>).filter(item => item.px > 0).map(item => `${item.label} ${item.px}px`)
+      const missing = (result.problems.missing_keywords as {decoration: string}[]).map(item => item.decoration)
+      time.textContent += ` · 문제 위치: ${found.join(', ') || '없음'}${missing.length ? ` · 빠진 장식: ${missing.join(', ')}` : ''}`
+    }
     const link = document.createElement('a'); link.href = `${result.shared_request ?? variant.id}/generation.json`; link.textContent = '생성 설정'
     card.append(name, pair, time, link); cards.append(card)
   }
