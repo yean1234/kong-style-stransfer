@@ -1,6 +1,6 @@
 {
   "mode": "demo",
-  "config_version": "demo-palette-2026-10-14-v5",
+  "config_version": "demo-palette-2026-10-14-v6",
   "vlm": {
     "url_env": "THEME_VLM_URL",
     "model_env": "THEME_VLM_MODEL",

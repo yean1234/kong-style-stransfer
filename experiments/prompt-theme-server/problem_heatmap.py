@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw, ImageEnhance
 from scipy import ndimage
 from skimage.color import deltaE_ciede2000, rgb2lab
 
-from decoration_extractor import _explained_by_source, _rgb
+from decoration_extractor import _rgb, balance_colors, drifted_source_pixels, exempt_colors
 
 
 SCHEMA = 'problem-heatmap-v1'
@@ -104,7 +104,13 @@ def analyze(original, generated, overlay, clipped, palette_plan, decorations, sc
     clipped = np.zeros_like(kept) if clipped is None else np.asarray(clipped, dtype=bool)
     source_rgb, generated_rgb = _rgb(original), _rgb(generated)
 
-    explained = _explained_by_source(source_rgb, generated_rgb, settings['source_tolerance_rgb'])
+    # The extractor's own drift rule, so a pixel it keeps as decoration is not called a leak here.
+    extraction = config['extraction']
+    _, balanced_rgb = balance_colors(source_rgb, generated_rgb, opaque, extraction['white_balance_max_gain_change'],
+                                     extraction['change_delta_e_initial'])
+    explained = drifted_source_pixels(source_rgb, balanced_rgb, settings['source_tolerance_rgb'],
+                                      exempt_colors(palette_plan, decorations),
+                                      extraction['source_explained_palette_exempt_delta_e'])
     labels, count = ndimage.label(kept, structure=np.ones((3, 3)))
     sizes = ndimage.sum(kept, labels, range(1, count + 1)) if count else np.zeros(0)
     small = np.isin(labels, 1 + np.flatnonzero(sizes < settings['fragment_px']))

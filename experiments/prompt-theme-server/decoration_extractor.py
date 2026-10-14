@@ -76,11 +76,58 @@ def _explained_by_source(source_rgb, generated_rgb, tolerance):
     return np.all((generated >= low) & (generated <= high), axis=2)
 
 
+def _nearest_source_distance(source_rgb, rgb, mask):
+    """dE00 from each masked pixel to the closest color in its 3x3 source neighborhood."""
+    ys, xs = np.nonzero(mask)
+    padded = np.pad(source_rgb, ((1, 1), (1, 1), (0, 0)), mode='edge')
+    pixel_lab = _lab(rgb[ys, xs])
+    nearest = np.full(len(ys), np.inf, dtype=np.float32)
+    for dy in range(3):
+        for dx in range(3):
+            nearest = np.minimum(nearest, deltaE_ciede2000(pixel_lab, _lab(padded[ys + dy, xs + dx])))
+    return nearest
+
+
+def exempt_colors(palette_plan, decorations):
+    """Requested decoration colors that can keep a pixel matching nearby source colors.
+
+    Reference colors are the reference image's dominant colors given to every decoration,
+    often the scene's own materials, so only explicit and proposed colors count.
+    """
+    return [value['hex'] for name in decorations
+            for value in (palette_plan or {}).get('decoration_palettes', {}).get(name, [])
+            if value.get('source') != 'reference']
+
+
+def drifted_source_pixels(source_rgb, rgb, tolerance, decoration_colors=(), exempt_delta_e=None):
+    """True where a color is a drifted copy of nearby source colors.
+
+    A pixel inside the local 3x3 source color range (+- tolerance) counts, unless its
+    color is within exempt_delta_e of a requested decoration color and closer to that
+    color than to every nearby source color.
+    """
+    explained = _explained_by_source(source_rgb, rgb, tolerance)
+    if exempt_delta_e is not None and decoration_colors:
+        to_palette = _closest_palette_distance(rgb, list(decoration_colors))
+        exempt = explained & (to_palette <= exempt_delta_e)
+        if exempt.any():
+            exempt[exempt] = to_palette[exempt] < _nearest_source_distance(source_rgb, rgb, exempt)
+        explained &= ~exempt
+    return explained
+
+
+def balance_colors(source_rgb, generated_rgb, opaque, max_change, change_threshold):
+    """Return (gains or None, generated colors with a global color cast removed)."""
+    gains = None if max_change is None else _white_balance_gains(
+        source_rgb, generated_rgb, opaque, max_change, change_threshold)
+    return gains, generated_rgb if gains is None else np.clip(generated_rgb / gains, 0, 255).astype(np.uint8)
+
+
 def _white_balance_gains(source_rgb, generated_rgb, opaque, max_change, change_threshold):
     """Von Kries diagonal gains: per-channel median of generated/source over opaque source pixels.
 
     A color cast moves almost every pixel, so balancing must bring at least half of the
-    sprite, and more than before, back within the change threshold. Otherwise the median
+    non-dark sprite pixels, and at least as many as before, within the change threshold. Otherwise the median
     came from decorations covering much of the sprite, and no correction is returned.
     """
     valid = opaque & (source_rgb.min(axis=2) > 10)
@@ -119,7 +166,8 @@ def extract_changes(original, generated, allowed_masks, protected=None, palette_
 
     Before thresholding, a global color cast is removed (white balance). A change whose
     color stays inside the local source color range is dropped unless it is close to a
-    requested decoration color. Pass None to disable each step.
+    requested decoration color and closer to it than to the nearby source colors. Pass
+    None to disable each step.
     """
     decorations = list(decorations)
     size = original.size
@@ -129,19 +177,14 @@ def extract_changes(original, generated, allowed_masks, protected=None, palette_
     high = high_resolution or generated
     source_rgb, generated_rgb = _rgb(original), _rgb(generated)
     source_alpha = np.asarray(original.convert('RGBA').getchannel('A')) > 0
-    palette_colors, shared_colors = _plan_colors(palette_plan or {}, decorations)
-    gains = None if white_balance_max_change is None else _white_balance_gains(
-        source_rgb, generated_rgb, source_alpha, white_balance_max_change, change_threshold)
     # Only change detection uses the balanced colors; the overlay keeps the generated ones.
-    balanced_rgb = generated_rgb if gains is None else np.clip(generated_rgb / gains, 0, 255).astype(np.uint8)
+    gains, balanced_rgb = balance_colors(source_rgb, generated_rgb, source_alpha, white_balance_max_change, change_threshold)
     difference = deltaE_ciede2000(_lab(source_rgb), _lab(balanced_rgb)).astype(np.float32)
     changed = difference > float(change_threshold)
     explained = np.zeros_like(changed)
     if source_tolerance is not None:
-        explained = changed & _explained_by_source(source_rgb, balanced_rgb, source_tolerance)
-        decoration_colors = [color for name in decorations for color in palette_colors[name]]
-        if palette_exempt_delta_e is not None and decoration_colors:
-            explained &= _closest_palette_distance(balanced_rgb, decoration_colors) > palette_exempt_delta_e
+        explained = changed & drifted_source_pixels(source_rgb, balanced_rgb, source_tolerance,
+                                                    exempt_colors(palette_plan, decorations), palette_exempt_delta_e)
         changed = changed & ~explained
     masks = {name: _mask((allowed_masks or {}).get(name), size, default=False) for name in decorations}
     allowed = np.logical_or.reduce(list(masks.values())) if masks else np.zeros(changed.shape, dtype=bool)
@@ -151,6 +194,7 @@ def extract_changes(original, generated, allowed_masks, protected=None, palette_
     clipped = changed & nearby_source & (~allowed | protected_mask)
     ambiguous = any(np.any(masks[left] & masks[right]) for i, left in enumerate(decorations) for right in decorations[i + 1:])
     rgb_candidates = generated_rgb[candidate]
+    palette_colors, shared_colors = _plan_colors(palette_plan or {}, decorations)
     all_colors = list(dict.fromkeys(shared_colors + [color for name in decorations for color in palette_colors[name]]))
     distance = _closest_palette_distance(generated_rgb, all_colors) if all_colors else np.full(changed.shape, np.nan)
     measured = distance[candidate]

@@ -201,6 +201,33 @@ class LeakFilterTests(unittest.TestCase):
         self.assertEqual(result['extraction']['candidate_px'], 32)
         self.assertEqual(unexempted['extraction']['candidate_px'], 0)
 
+    def test_drift_is_dropped_when_the_palette_contains_the_source_color(self):
+        # A reference-image palette can hold the material's own color; drift stays nearer to it.
+        original = Image.new('RGBA', (16, 16), (204, 204, 204, 255))
+        generated = original.convert('RGB')
+        generated.paste((214, 204, 188), (0, 0, 16, 2))
+        allowed = {'snow': np.ones((16, 16), bool)}
+        result = extract_changes(original, generated, allowed, None, palette({'snow': '#CCCCCC'}), ['snow'])
+        self.assertEqual(result['extraction']['candidate_px'], 0)
+        self.assertEqual(result['extraction']['dropped_source_explained_px'], 32)
+
+    def test_reference_image_colors_do_not_exempt_drift(self):
+        original = Image.new('RGBA', (16, 16), (204, 204, 204, 255))
+        generated = original.convert('RGB')
+        generated.paste((201, 211, 222), (0, 0, 16, 2))
+        plan = palette({'snow': '#C9D3DE'})
+        plan['decoration_palettes']['snow'][0]['source'] = 'reference'
+        result = extract_changes(original, generated, {'snow': np.ones((16, 16), bool)}, None, plan, ['snow'])
+        self.assertEqual(result['extraction']['candidate_px'], 0)
+
+    def test_shared_outline_color_does_not_exempt_drift(self):
+        original = Image.new('RGBA', (16, 16), (60, 60, 60, 255))
+        generated = original.convert('RGB')
+        generated.paste((40, 40, 40), (0, 0, 16, 2))
+        allowed = {'lights': np.ones((16, 16), bool)}
+        result = extract_changes(original, generated, allowed, None, palette(), ['lights'])
+        self.assertEqual(result['extraction']['candidate_px'], 0)
+
 
 class ScoringTests(unittest.TestCase):
     def test_level_score_weights_candidate_token_probabilities(self):
