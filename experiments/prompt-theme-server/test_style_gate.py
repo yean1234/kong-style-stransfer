@@ -146,6 +146,52 @@ class ChangeExtractionTests(unittest.TestCase):
         self.assertEqual(report['protected_overlap_px'], 0)
 
 
+class LeakFilterTests(unittest.TestCase):
+    """White balance, hysteresis and the local source range keep drift out of the candidate."""
+    OFF = {'strong_change_threshold': None, 'source_tolerance': None, 'white_balance_max_change': None}
+
+    def test_color_cast_and_blurred_edge_are_dropped_but_a_new_bulb_is_kept(self):
+        source = np.zeros((16, 16, 4), np.uint8)
+        source[:, :8], source[:, 8:] = (200, 120, 60, 255), (220, 220, 225, 255)
+        generated = source[:, :, :3].astype(float)
+        generated[:, 7] = (215, 190, 170)  # a strong change, but inside the orange/white source range
+        generated[2:4, 3:5] = (255, 211, 74)
+        generated = Image.fromarray(np.clip(generated * (1.08, 1.0, .92), 0, 255).astype(np.uint8))
+        original = Image.fromarray(source)
+        allowed = {'lights': np.ones((16, 16), bool)}
+        result = extract_changes(original, generated, allowed, None, palette(), ['lights'])
+        legacy = extract_changes(original, generated, allowed, None, palette(), ['lights'], **self.OFF)
+        self.assertEqual(np.argwhere(result['candidate']).tolist(), [[2, 3], [2, 4], [3, 3], [3, 4]])
+        self.assertTrue(np.allclose(result['extraction']['white_balance_gains'], (1.08, 1.0, .92), atol=.01))
+        self.assertEqual(result['extraction']['dropped_source_explained_px'], 16)
+        self.assertTrue(legacy['candidate'][:, 7].all())
+        self.assertGreater(legacy['extraction']['candidate_px'], 100)
+        self.assertIsNone(legacy['extraction']['white_balance_gains'])
+
+    def test_white_balance_is_skipped_when_decoration_covers_most_of_the_sprite(self):
+        original = Image.new('RGBA', (16, 16), (200, 120, 60, 255))
+        generated = original.convert('RGB')
+        generated.paste((244, 248, 255), (0, 0, 16, 12))
+        allowed = {'snow': np.ones((16, 16), bool)}
+        result = extract_changes(original, generated, allowed, None, palette(), ['snow'])
+        unguarded = extract_changes(original, generated, allowed, None, palette(), ['snow'], white_balance_max_change=10)
+        self.assertIsNone(result['extraction']['white_balance_gains'])
+        self.assertEqual(result['extraction']['candidate_px'], 192)
+        self.assertFalse(unguarded['candidate'][:12].any())
+
+    def test_weak_change_counts_only_when_connected_to_a_strong_change(self):
+        original = Image.new('RGBA', (16, 16), (100, 100, 100, 255))
+        generated = original.convert('RGB')
+        generated.paste((255, 211, 74), (2, 2, 4, 4))
+        generated.paste((125, 100, 100), (4, 2, 5, 4))
+        generated.putpixel((12, 12), (125, 100, 100))
+        allowed = {'lights': np.ones((16, 16), bool)}
+        result = extract_changes(original, generated, allowed, None, palette(), ['lights'], source_tolerance=None)
+        self.assertEqual(result['extraction']['candidate_px'], 6)
+        self.assertFalse(result['candidate'][12, 12])
+        self.assertEqual(result['extraction']['dropped_isolated_px'], 1)
+
+
 class ScoringTests(unittest.TestCase):
     def test_level_score_weights_candidate_token_probabilities(self):
         class Response:

@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw, ImageEnhance
 from scipy import ndimage
 from skimage.color import deltaE_ciede2000, rgb2lab
 
-from decoration_extractor import _rgb
+from decoration_extractor import _explained_by_source, _rgb
 
 
 SCHEMA = 'problem-heatmap-v1'
@@ -32,18 +32,6 @@ CLASSES = {
     'cutout_leak': ((255, 59, 48), '원본 픽셀이 장식으로 잘못 잡힘(누끼 번짐)'),
 }
 FILES = ('problem-heatmap.png', 'problem-classes.png', 'problem-map.png', 'problems.json')
-
-
-def _explained_by_source(source_rgb, generated_rgb, tolerance):
-    """True where the generated color stays inside the local 3x3 source color range.
-
-    Such a pixel is a resampled or drifted copy of nearby source colors, not new
-    decoration material.
-    """
-    low = ndimage.minimum_filter(source_rgb, size=(3, 3, 1)).astype(int) - tolerance
-    high = ndimage.maximum_filter(source_rgb, size=(3, 3, 1)).astype(int) + tolerance
-    generated = generated_rgb.astype(int)
-    return np.all((generated >= low) & (generated <= high), axis=2)
 
 
 def _regions(mask, limit=5):

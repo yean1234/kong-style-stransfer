@@ -1,6 +1,5 @@
 import copy
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +14,9 @@ from style_gate import gate_config, run_candidates
 
 
 ORANGE, WHITE, BULB = (200, 120, 60), (220, 220, 225), (255, 211, 74)
+# Turns off the extractor's own leak filters so a blurred source edge reaches the overlay.
+LEGACY_EXTRACTION = {'change_delta_e_strong': None, 'source_explained_tolerance_rgb': None,
+                     'white_balance_max_gain_change': None}
 
 
 def plan(colors):
@@ -34,10 +36,17 @@ def two_tone_with_bulb():
     return Image.fromarray(source), Image.fromarray(generated)
 
 
-def candidate(original, generated, palette_plan, decorations):
+def legacy_config():
+    config = copy.deepcopy(gate_config())
+    config['extraction'].update(LEGACY_EXTRACTION)
+    return config
+
+
+def candidate(original, generated, palette_plan, decorations, legacy=False):
     allowed = {name: np.ones(original.size[::-1], bool) for name in decorations}
+    options = {'strong_change_threshold': None, 'source_tolerance': None, 'white_balance_max_change': None} if legacy else {}
     extraction = extract_changes(original, generated, allowed, np.zeros(original.size[::-1], bool),
-                                 palette_plan, decorations)
+                                 palette_plan, decorations, **options)
     overlay, _ = fix_overlay(extraction, original)
     return overlay, extraction['clipped']
 
@@ -51,7 +60,7 @@ class ProblemHeatmapTests(unittest.TestCase):
     def test_blurred_source_edge_is_a_cutout_leak_but_a_new_bulb_is_not(self):
         original, generated = two_tone_with_bulb()
         palette_plan = plan({'lights': '#FFD34A'})
-        overlay, clipped = candidate(original, generated, palette_plan, ['lights'])
+        overlay, clipped = candidate(original, generated, palette_plan, ['lights'], legacy=True)
         with tempfile.TemporaryDirectory() as temp:
             summary = analyze(original, generated, overlay, clipped, palette_plan, ['lights'], {}, gate_config(), temp)
             leak = class_mask(temp, 'cutout_leak')
@@ -96,11 +105,11 @@ class ProblemHeatmapTests(unittest.TestCase):
 
     def test_gate_saves_problem_files_without_changing_the_decision(self):
         original, generated = two_tone_with_bulb()
-        disabled = copy.deepcopy(gate_config())
+        disabled = legacy_config()
         disabled['problem_heatmap']['enabled'] = False
         results = {}
         with tempfile.TemporaryDirectory() as temp:
-            for label, config in (('on', gate_config()), ('off', disabled)):
+            for label, config in (('on', legacy_config()), ('off', disabled)):
                 folder = Path(temp) / label
                 with patch('style_gate.gate_config', return_value=config), \
                         patch('style_gate._score', return_value={'status': 'unscored', 'SC': None, 'PQ': None, 'O': None}):
@@ -117,7 +126,9 @@ class ProblemHeatmapTests(unittest.TestCase):
     def test_saved_run_is_reanalyzed_and_composed_on_the_map(self):
         original, generated = two_tone_with_bulb()
         palette_plan = plan({'lights': '#FFD34A'})
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'THEME_GATE_MODE': 'shadow'}), \
+        config = legacy_config()
+        config['mode'] = 'shadow'
+        with tempfile.TemporaryDirectory() as temp, patch('style_gate.gate_config', return_value=config), \
                 patch('style_gate._score', return_value={'status': 'unscored', 'SC': None, 'PQ': None, 'O': None}):
             run = Path(temp)
             run_candidates(run / 'stall', original, ['lights'], 'winter', palette_plan,

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter
+from scipy import ndimage
 from skimage.color import deltaE_ciede2000, rgb2lab
 
 from palette_planner import normalize_hex
@@ -63,6 +64,31 @@ def _save_mask(path, mask):
     Image.fromarray(np.where(mask, 255, 0).astype(np.uint8)).save(path)
 
 
+def _explained_by_source(source_rgb, generated_rgb, tolerance):
+    """True where the generated color stays inside the local 3x3 source color range.
+
+    Such a pixel is a resampled or drifted copy of nearby source colors, not new
+    decoration material.
+    """
+    low = ndimage.minimum_filter(source_rgb, size=(3, 3, 1)).astype(int) - tolerance
+    high = ndimage.maximum_filter(source_rgb, size=(3, 3, 1)).astype(int) + tolerance
+    generated = generated_rgb.astype(int)
+    return np.all((generated >= low) & (generated <= high), axis=2)
+
+
+def _white_balance_gains(source_rgb, generated_rgb, opaque, max_change):
+    """Von Kries diagonal gains: per-channel median of generated/source over opaque source pixels.
+
+    A gain beyond max_change more likely means decorations cover most of the sprite
+    than a color cast, so no correction is returned then.
+    """
+    valid = opaque & (source_rgb.min(axis=2) > 10)
+    if not valid.any():
+        return None
+    gains = np.median(generated_rgb[valid].astype(np.float32) / source_rgb[valid], axis=0)
+    return gains if np.all(np.abs(gains - 1) <= max_change) else None
+
+
 def _grid_sharpness(high, source_size):
     width, height = source_size
     if high.width % width or high.height % height:
@@ -81,8 +107,15 @@ def _grid_sharpness(high, source_size):
 
 def extract_changes(original, generated, allowed_masks, protected=None, palette_plan=None,
                     decorations=(), change_threshold=5.0, palette_threshold=5.0,
-                    output_dir=None, high_resolution=None):
-    """Return a pre-snap overlay and measurements for one generated candidate."""
+                    output_dir=None, high_resolution=None, strong_change_threshold=20.0,
+                    source_tolerance=20, white_balance_max_change=0.25):
+    """Return a pre-snap overlay and measurements for one generated candidate.
+
+    Before thresholding, a global color cast is removed (white balance). A weak change
+    counts only when 8-connected to a strong one (Canny-style hysteresis), and a change
+    whose color stays inside the local source color range is dropped. Pass None to
+    disable each step.
+    """
     decorations = list(decorations)
     size = original.size
     if generated.size != size:
@@ -90,13 +123,26 @@ def extract_changes(original, generated, allowed_masks, protected=None, palette_
         generated = generated.resize(size, resample)
     high = high_resolution or generated
     source_rgb, generated_rgb = _rgb(original), _rgb(generated)
-    difference = deltaE_ciede2000(_lab(source_rgb), _lab(generated_rgb)).astype(np.float32)
-    changed = difference > float(change_threshold)
+    source_alpha = np.asarray(original.convert('RGBA').getchannel('A')) > 0
+    gains = None if white_balance_max_change is None else _white_balance_gains(
+        source_rgb, generated_rgb, source_alpha, white_balance_max_change)
+    # Only change detection uses the balanced colors; the overlay keeps the generated ones.
+    balanced_rgb = generated_rgb if gains is None else np.clip(generated_rgb / gains, 0, 255).astype(np.uint8)
+    difference = deltaE_ciede2000(_lab(source_rgb), _lab(balanced_rgb)).astype(np.float32)
+    weak = difference > float(change_threshold)
+    changed = weak
+    if strong_change_threshold is not None:
+        labels, _ = ndimage.label(weak, structure=np.ones((3, 3), dtype=bool))
+        changed = weak & np.isin(labels, np.unique(labels[difference > float(strong_change_threshold)]))
+    isolated = weak & ~changed
+    explained = np.zeros_like(changed)
+    if source_tolerance is not None:
+        explained = changed & _explained_by_source(source_rgb, balanced_rgb, source_tolerance)
+        changed = changed & ~explained
     masks = {name: _mask((allowed_masks or {}).get(name), size, default=False) for name in decorations}
     allowed = np.logical_or.reduce(list(masks.values())) if masks else np.zeros(changed.shape, dtype=bool)
     protected_mask = _mask(protected, size)
     candidate = changed & allowed & ~protected_mask
-    source_alpha = np.asarray(original.convert('RGBA').getchannel('A')) > 0
     nearby_source = np.asarray(original.convert('RGBA').getchannel('A').filter(ImageFilter.MaxFilter(5))) > 0
     clipped = changed & nearby_source & (~allowed | protected_mask)
     ambiguous = any(np.any(masks[left] & masks[right]) for i, left in enumerate(decorations) for right in decorations[i + 1:])
@@ -120,6 +166,11 @@ def extract_changes(original, generated, allowed_masks, protected=None, palette_
     extraction = {
         'method': 'change_mask_with_palette_guidance',
         'change_delta_e': float(change_threshold),
+        'change_delta_e_strong': None if strong_change_threshold is None else float(strong_change_threshold),
+        'source_tolerance_rgb': source_tolerance,
+        'white_balance_gains': None if gains is None else [round(float(value), 4) for value in gains],
+        'dropped_isolated_px': int((isolated & allowed & ~protected_mask).sum()),
+        'dropped_source_explained_px': int((explained & allowed & ~protected_mask).sum()),
         'palette_distance_warn_delta_e': float(palette_threshold),
         'changed_px': int(changed.sum()),
         'candidate_px': int(candidate.sum()),
