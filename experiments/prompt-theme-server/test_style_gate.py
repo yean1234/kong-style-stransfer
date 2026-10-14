@@ -147,8 +147,8 @@ class ChangeExtractionTests(unittest.TestCase):
 
 
 class LeakFilterTests(unittest.TestCase):
-    """White balance, hysteresis and the local source range keep drift out of the candidate."""
-    OFF = {'strong_change_threshold': None, 'source_tolerance': None, 'white_balance_max_change': None}
+    """White balance and the local source range keep drift out of the candidate."""
+    OFF = {'source_tolerance': None, 'white_balance_max_change': None}
 
     def test_color_cast_and_blurred_edge_are_dropped_but_a_new_bulb_is_kept(self):
         source = np.zeros((16, 16, 4), np.uint8)
@@ -179,17 +179,27 @@ class LeakFilterTests(unittest.TestCase):
         self.assertEqual(result['extraction']['candidate_px'], 192)
         self.assertFalse(unguarded['candidate'][:12].any())
 
-    def test_weak_change_counts_only_when_connected_to_a_strong_change(self):
-        original = Image.new('RGBA', (16, 16), (100, 100, 100, 255))
+    def test_white_balance_is_skipped_when_snow_on_light_pixels_sets_the_median(self):
+        source = np.zeros((16, 16, 4), np.uint8)
+        source[:, 0::2], source[:, 1::2] = (208, 208, 208, 255), (200, 120, 60, 255)
+        generated = source[:, :, :3].copy()
+        generated[:9] = (244, 248, 255)
+        allowed = {'snow': np.ones((16, 16), bool)}
+        result = extract_changes(Image.fromarray(source), Image.fromarray(generated), allowed, None, palette(), ['snow'])
+        self.assertIsNone(result['extraction']['white_balance_gains'])
+        self.assertTrue(result['candidate'][:9].all())
+        self.assertFalse(result['candidate'][9:].any())
+
+    def test_decoration_colored_change_inside_the_source_range_is_kept(self):
+        original = Image.new('RGBA', (16, 16), (204, 204, 204, 255))
         generated = original.convert('RGB')
-        generated.paste((255, 211, 74), (2, 2, 4, 4))
-        generated.paste((125, 100, 100), (4, 2, 5, 4))
-        generated.putpixel((12, 12), (125, 100, 100))
-        allowed = {'lights': np.ones((16, 16), bool)}
-        result = extract_changes(original, generated, allowed, None, palette(), ['lights'], source_tolerance=None)
-        self.assertEqual(result['extraction']['candidate_px'], 6)
-        self.assertFalse(result['candidate'][12, 12])
-        self.assertEqual(result['extraction']['dropped_isolated_px'], 1)
+        generated.paste((201, 211, 222), (0, 0, 16, 2))
+        allowed = {'snow': np.ones((16, 16), bool)}
+        plan = palette({'snow': '#C9D3DE'})
+        result = extract_changes(original, generated, allowed, None, plan, ['snow'])
+        unexempted = extract_changes(original, generated, allowed, None, plan, ['snow'], palette_exempt_delta_e=None)
+        self.assertEqual(result['extraction']['candidate_px'], 32)
+        self.assertEqual(unexempted['extraction']['candidate_px'], 0)
 
 
 class ScoringTests(unittest.TestCase):

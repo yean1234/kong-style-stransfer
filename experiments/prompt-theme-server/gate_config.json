@@ -1,6 +1,6 @@
 {
   "mode": "demo",
-  "config_version": "demo-palette-2026-10-14-v4",
+  "config_version": "demo-palette-2026-10-14-v5",
   "vlm": {
     "url_env": "THEME_VLM_URL",
     "model_env": "THEME_VLM_MODEL",
@@ -15,8 +15,8 @@
     "method": "change_mask_with_palette_guidance",
     "fixed_rgb_decoration_filters": false,
     "change_delta_e_initial": 5.0,
-    "change_delta_e_strong": 20.0,
     "source_explained_tolerance_rgb": 20,
+    "source_explained_palette_exempt_delta_e": 10.0,
     "white_balance_max_gain_change": 0.25,
     "palette_distance_warn_delta_e_initial": 5.0,
     "drop_by_palette_distance": false,

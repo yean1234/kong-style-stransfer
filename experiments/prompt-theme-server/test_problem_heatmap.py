@@ -15,8 +15,7 @@ from style_gate import gate_config, run_candidates
 
 ORANGE, WHITE, BULB = (200, 120, 60), (220, 220, 225), (255, 211, 74)
 # Turns off the extractor's own leak filters so a blurred source edge reaches the overlay.
-LEGACY_EXTRACTION = {'change_delta_e_strong': None, 'source_explained_tolerance_rgb': None,
-                     'white_balance_max_gain_change': None}
+LEGACY_EXTRACTION = {'source_explained_tolerance_rgb': None, 'white_balance_max_gain_change': None}
 
 
 def plan(colors):
@@ -44,7 +43,7 @@ def legacy_config():
 
 def candidate(original, generated, palette_plan, decorations, legacy=False):
     allowed = {name: np.ones(original.size[::-1], bool) for name in decorations}
-    options = {'strong_change_threshold': None, 'source_tolerance': None, 'white_balance_max_change': None} if legacy else {}
+    options = {'source_tolerance': None, 'white_balance_max_change': None} if legacy else {}
     extraction = extract_changes(original, generated, allowed, np.zeros(original.size[::-1], bool),
                                  palette_plan, decorations, **options)
     overlay, _ = fix_overlay(extraction, original)

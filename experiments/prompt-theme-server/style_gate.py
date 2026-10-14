@@ -125,8 +125,8 @@ def _evaluate_candidate(candidate_dir, original, generated, high_resolution, all
         config['extraction']['change_delta_e_initial'],
         config['extraction']['palette_distance_warn_delta_e_initial'],
         candidate_dir, high_resolution,
-        strong_change_threshold=config['extraction']['change_delta_e_strong'],
         source_tolerance=config['extraction']['source_explained_tolerance_rgb'],
+        palette_exempt_delta_e=config['extraction']['source_explained_palette_exempt_delta_e'],
         white_balance_max_change=config['extraction']['white_balance_max_gain_change'])
     overlay, fix = fix_overlay(extraction, original, candidate_dir)
     composite = Image.alpha_composite(original.convert('RGBA'), overlay)
